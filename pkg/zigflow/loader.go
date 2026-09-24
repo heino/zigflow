@@ -25,6 +25,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/open-workflow-specification/sdk-go/v4/model"
 	"github.com/zigflow/schema"
+	"github.com/zigflow/zigflow/pkg/zigflow/activities"
 	"github.com/zigflow/zigflow/pkg/zigflow/extensions"
 
 	// Imported for its init() side effect: the models package registers
@@ -109,7 +110,11 @@ func ValidateBytes(data []byte) error {
 		return fmt.Errorf("error parsing workflow document: %w", err)
 	}
 
-	if err := schema.ValidateDocument(rawDoc); err != nil {
+	schemaDoc, err := a2aSchemaCompatibleDocument(rawDoc)
+	if err != nil {
+		return err
+	}
+	if err := schema.ValidateDocument(schemaDoc); err != nil {
 		return newSchemaValidationError(err)
 	}
 
@@ -121,6 +126,91 @@ func ValidateBytes(data []byte) error {
 		return err
 	}
 
+	return nil
+}
+
+// a2aSchemaCompatibleDocument bridges the current versioned Zigflow schema,
+// which does not yet model OWS 1.0.3's A2A call. It validates A2A's own
+// call-specific shape and replaces only the call body in a clone with a valid
+// HTTP body so the existing schema can continue to validate every shared task
+// property and every non-A2A task. The source document is never mutated.
+//
+// This compatibility layer must be removed when github.com/zigflow/schema
+// publishes its native A2A definition and Zigflow upgrades to that version.
+func a2aSchemaCompatibleDocument(raw map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("clone workflow for A2A schema validation: %w", err)
+	}
+	var clone map[string]any
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("decode workflow for A2A schema validation: %w", err)
+	}
+	if err := rewriteA2ATaskListForSchema(clone["do"]); err != nil {
+		return nil, err
+	}
+	return clone, nil
+}
+
+func rewriteA2ATaskListForSchema(raw any) error {
+	tasks, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	for _, item := range tasks {
+		named, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, rawTask := range named {
+			task, ok := rawTask.(map[string]any)
+			if !ok {
+				continue
+			}
+			if err := rewriteA2ATaskForSchema(name, task); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func rewriteA2ATaskForSchema(name string, task map[string]any) error {
+	if call, _ := task["call"].(string); call == "a2a" {
+		data, err := json.Marshal(task["with"])
+		if err != nil {
+			return fmt.Errorf("task %q: marshal A2A arguments: %w", name, err)
+		}
+		args, err := activities.DecodeA2AArguments(data)
+		if err != nil {
+			return fmt.Errorf("task %q: %w", name, err)
+		}
+		if err := activities.ValidateA2AArguments(&args); err != nil {
+			return fmt.Errorf("task %q: %w", name, err)
+		}
+
+		// The external schema has no A2A variant yet. Preserve all TaskBase
+		// fields and substitute only the discriminated call body for its pass.
+		task["call"] = "http"
+		task["with"] = map[string]any{"method": "POST", "endpoint": "https://a2a.invalid"}
+	}
+
+	if err := rewriteA2ATaskListForSchema(task["do"]); err != nil {
+		return err
+	}
+	if err := rewriteA2ATaskListForSchema(task["try"]); err != nil {
+		return err
+	}
+	if catch, ok := task["catch"].(map[string]any); ok {
+		if err := rewriteA2ATaskListForSchema(catch["do"]); err != nil {
+			return err
+		}
+	}
+	if fork, ok := task["fork"].(map[string]any); ok {
+		if err := rewriteA2ATaskListForSchema(fork["branches"]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

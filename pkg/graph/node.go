@@ -48,6 +48,14 @@ func nodeInfoFrom(item *model.TaskItem) (NodeInfo, bool) {
 	case item.AsCallGRPCTask() != nil:
 		return NodeInfo{TypeName: "CALL_GRPC"}, true
 	case item.AsCallFunctionTask() != nil:
+		// Although OWS DSL 1.0.3 defines call: a2a, the OWS Go SDK v4.0.0
+		// has no native A2A task model or AsCallA2ATask accessor.
+		// Zigflow therefore currently recognises A2A through the generic
+		// CallFunction task.
+		if item.AsCallFunctionTask().Call == "a2a" {
+			return NodeInfo{TypeName: "CALL_A2A"}, true
+		}
+
 		return NodeInfo{TypeName: "CALL_ACTIVITY"}, true
 	case item.AsWaitTask() != nil:
 		return NodeInfo{TypeName: "WAIT"}, true

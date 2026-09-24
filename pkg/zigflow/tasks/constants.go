@@ -61,6 +61,7 @@ const activityNamingVersion = 1
 const (
 	legacyCallHTTPActivityName      = "CallHTTPActivity"
 	legacyCallGRPCActivityName      = "CallGRPCActivity"
+	legacyCallA2AActivityName       = "CallA2AActivity"
 	legacyCallContainerActivityName = "CallContainerActivity"
 	legacyCallScriptActivityName    = "CallScriptActivity"
 	legacyCallShellActivityName     = "CallShellActivity"

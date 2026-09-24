@@ -264,9 +264,12 @@ func NewTaskBuilder(
 
 	switch t := task.(type) {
 	case *model.CallFunction:
-		if t.Call == customCallFunctionActivity {
+		switch t.Call {
+		case "a2a":
+			b, err = NewCallA2ATaskBuilder(temporalWorker, t, taskName, doc, emitter, taskOpts)
+		case customCallFunctionActivity:
 			b, err = NewCallActivityTaskBuilder(temporalWorker, t, taskName, doc, emitter, taskOpts)
-		} else {
+		default:
 			return nil, fmt.Errorf("unsupported call type '%s' for task '%s'", t.Call, taskName)
 		}
 	case *model.CallGRPC:
@@ -311,6 +314,7 @@ func NewTaskBuilder(
 // Ensure the tasks meets the TaskBuilder type
 var (
 	_ TaskBuilder = &CallActivityTaskBuilder{}
+	_ TaskBuilder = &CallA2ATaskBuilder{}
 	_ TaskBuilder = &CallGRPCTaskBuilder{}
 	_ TaskBuilder = &CallHTTPTaskBuilder{}
 	_ TaskBuilder = &DoTaskBuilder{}

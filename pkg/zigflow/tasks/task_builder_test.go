@@ -120,6 +120,14 @@ func TestNewTaskBuilderFactory(t *testing.T) {
 			expectedType: &CallHTTPTaskBuilder{},
 		},
 		{
+			name: "call A2A",
+			task: &model.CallFunction{Call: "a2a", With: map[string]any{
+				"method": "tasks/get",
+				"server": "https://agent.example.com/a2a",
+			}},
+			expectedType: &CallA2ATaskBuilder{},
+		},
+		{
 			name:         "do task",
 			task:         &model.DoTask{},
 			expectedType: &DoTaskBuilder{},

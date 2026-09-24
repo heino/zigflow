@@ -256,6 +256,75 @@ do:
 	}
 }
 
+func TestValidateBytesAcceptsA2ACall(t *testing.T) {
+	yaml := `
+document:
+  dsl: 1.0.3
+  taskQueue: zigflow
+  workflowType: a2a-call
+  version: 0.0.1
+do:
+  - generateReport:
+      call: a2a
+      with:
+        method: message/send
+        agentCard:
+          endpoint: https://agent.example.com/.well-known/agent-card.json
+        parameters:
+          message:
+            parts:
+              - kind: text
+                text: Generate the Q1 sales report.
+`
+
+	assert.NoError(t, zigflow.ValidateBytes([]byte(yaml)))
+	workflow, err := zigflow.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	assert.Equal(t, "a2a", workflow.Do.Key("generateReport").AsCallFunctionTask().Call)
+}
+
+func TestValidateBytesRejectsUnsupportedA2AMethod(t *testing.T) {
+	yaml := `
+document:
+  dsl: 1.0.3
+  taskQueue: zigflow
+  workflowType: a2a-call
+  version: 0.0.1
+do:
+  - invalidCall:
+      call: a2a
+      with:
+        method: no/such-method
+        server: https://agent.example.com/a2a
+`
+
+	err := zigflow.ValidateBytes([]byte(yaml))
+	assert.ErrorContains(t, err, "unsupported A2A method")
+}
+
+func TestValidateBytesAcceptsA2ACallInForkBranch(t *testing.T) {
+	yaml := `
+document:
+  dsl: 1.0.3
+  taskQueue: zigflow
+  workflowType: a2a-fork
+  version: 0.0.1
+do:
+  - parallel:
+      fork:
+        branches:
+          - report:
+              call: a2a
+              with:
+                method: tasks/get
+                server: https://agent.example.com/a2a
+                parameters:
+                  id: task-123
+`
+
+	assert.NoError(t, zigflow.ValidateBytes([]byte(yaml)))
+}
+
 // TestLoadFromFile_VanillaWaitTaskTypeIsSDK verifies that a literal-numeric
 // wait task is parsed by the SDK as its native *model.WaitTask. The Zigflow
 // extension must not intercept vanilla waits, so the existing builder path
