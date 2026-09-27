@@ -31,13 +31,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient"
 )
 
-// a2aHTTPJSONTransport implements the HTTP+JSON mappings in A2A 0.3. The
-// upstream Go SDK declares HTTP+JSON but currently ships only JSON-RPC and
-// gRPC transports, so Zigflow supplies this adapter around its public types.
+// a2aHTTPJSONTransport implements the A2A v1 HTTP+JSON transport mappings.
 type a2aHTTPJSONTransport struct {
 	baseURL    string
 	httpClient *http.Client
@@ -49,12 +47,14 @@ func newA2AHTTPJSONTransport(baseURL string, httpClient *http.Client) *a2aHTTPJS
 	return &a2aHTTPJSONTransport{baseURL: strings.TrimRight(baseURL, "/"), httpClient: httpClient}
 }
 
-func (t *a2aHTTPJSONTransport) SendMessage(ctx context.Context, params *a2a.MessageSendParams) (a2a.SendMessageResult, error) {
-	data, err := t.request(ctx, http.MethodPost, "v1/message:send", params, nil)
+func (t *a2aHTTPJSONTransport) SendMessage(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.SendMessageRequest,
+) (a2a.SendMessageResult, error) {
+	data, err := t.request(ctx, serviceParams, http.MethodPost, "v1/message:send", params, nil)
 	if err != nil {
 		return nil, err
 	}
-	event, err := a2a.UnmarshalEventJSON(data)
+	event, err := a2aHTTPJSONEvent(data)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP+JSON message/send returned an invalid result: %w", err)
 	}
@@ -68,23 +68,29 @@ func (t *a2aHTTPJSONTransport) SendMessage(ctx context.Context, params *a2a.Mess
 	}
 }
 
-func (t *a2aHTTPJSONTransport) SendStreamingMessage(ctx context.Context, params *a2a.MessageSendParams) iter.Seq2[a2a.Event, error] {
-	return t.stream(ctx, "v1/message:stream", params)
+func (t *a2aHTTPJSONTransport) SendStreamingMessage(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.SendMessageRequest,
+) iter.Seq2[a2a.Event, error] {
+	return t.stream(ctx, serviceParams, "v1/message:stream", params)
 }
 
-func (t *a2aHTTPJSONTransport) GetTask(ctx context.Context, params *a2a.TaskQueryParams) (*a2a.Task, error) {
+func (t *a2aHTTPJSONTransport) GetTask(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.GetTaskRequest,
+) (*a2a.Task, error) {
 	query := url.Values{}
 	if params.HistoryLength != nil {
 		query.Set("historyLength", strconv.Itoa(*params.HistoryLength))
 	}
 	var result a2a.Task
-	if err := t.decode(ctx, http.MethodGet, "v1/tasks/"+url.PathEscape(string(params.ID)), nil, query, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodGet, "v1/tasks/"+url.PathEscape(string(params.ID)), nil, query, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (t *a2aHTTPJSONTransport) ListTasks(ctx context.Context, params *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
+func (t *a2aHTTPJSONTransport) ListTasks(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.ListTasksRequest,
+) (*a2a.ListTasksResponse, error) {
 	query := url.Values{}
 	if params.ContextID != "" {
 		query.Set("contextId", params.ContextID)
@@ -98,74 +104,85 @@ func (t *a2aHTTPJSONTransport) ListTasks(ctx context.Context, params *a2a.ListTa
 	if params.PageToken != "" {
 		query.Set("pageToken", params.PageToken)
 	}
-	if params.HistoryLength != 0 {
-		query.Set("historyLength", strconv.Itoa(params.HistoryLength))
+	if params.HistoryLength != nil {
+		query.Set("historyLength", strconv.Itoa(*params.HistoryLength))
 	}
-	if params.LastUpdatedAfter != nil {
-		query.Set("lastUpdatedAfter", params.LastUpdatedAfter.Format(time.RFC3339))
+	if params.StatusTimestampAfter != nil {
+		query.Set("statusTimestampAfter", params.StatusTimestampAfter.Format(time.RFC3339))
 	}
 	if params.IncludeArtifacts {
 		query.Set("includeArtifacts", "true")
 	}
 	var result a2a.ListTasksResponse
-	if err := t.decode(ctx, http.MethodGet, "v1/tasks", nil, query, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodGet, "v1/tasks", nil, query, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (t *a2aHTTPJSONTransport) CancelTask(ctx context.Context, params *a2a.TaskIDParams) (*a2a.Task, error) {
+func (t *a2aHTTPJSONTransport) CancelTask(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.CancelTaskRequest,
+) (*a2a.Task, error) {
 	var result a2a.Task
 	endpoint := "v1/tasks/" + url.PathEscape(string(params.ID)) + ":cancel"
-	body := map[string]string{"name": "tasks/" + string(params.ID)}
-	if err := t.decode(ctx, http.MethodPost, endpoint, body, nil, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodPost, endpoint, nil, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (t *a2aHTTPJSONTransport) ResubscribeToTask(ctx context.Context, params *a2a.TaskIDParams) iter.Seq2[a2a.Event, error] {
-	return t.stream(ctx, "v1/tasks/"+url.PathEscape(string(params.ID))+":subscribe", map[string]string{"name": "tasks/" + string(params.ID)})
+func (t *a2aHTTPJSONTransport) SubscribeToTask(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.SubscribeToTaskRequest,
+) iter.Seq2[a2a.Event, error] {
+	return t.stream(ctx, serviceParams, "v1/tasks/"+url.PathEscape(string(params.ID))+":subscribe", nil)
 }
 
-func (t *a2aHTTPJSONTransport) GetTaskPushConfig(ctx context.Context, params *a2a.GetTaskPushConfigParams) (*a2a.TaskPushConfig, error) {
-	var result a2a.TaskPushConfig
-	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs/" + url.PathEscape(params.ConfigID)
-	if err := t.decode(ctx, http.MethodGet, endpoint, nil, nil, &result); err != nil {
+func (t *a2aHTTPJSONTransport) GetTaskPushConfig(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.GetTaskPushConfigRequest,
+) (*a2a.PushConfig, error) {
+	var result a2a.PushConfig
+	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs/" + url.PathEscape(params.ID)
+	if err := t.decode(ctx, serviceParams, http.MethodGet, endpoint, nil, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (t *a2aHTTPJSONTransport) ListTaskPushConfig(
-	ctx context.Context, params *a2a.ListTaskPushConfigParams,
-) ([]*a2a.TaskPushConfig, error) {
-	var result []*a2a.TaskPushConfig
+func (t *a2aHTTPJSONTransport) ListTaskPushConfigs(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.ListTaskPushConfigRequest,
+) ([]*a2a.PushConfig, error) {
+	var result a2a.ListTaskPushConfigResponse
 	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs"
-	if err := t.decode(ctx, http.MethodGet, endpoint, nil, nil, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodGet, endpoint, nil, nil, &result); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return result.Configs, nil
 }
 
-func (t *a2aHTTPJSONTransport) SetTaskPushConfig(ctx context.Context, params *a2a.TaskPushConfig) (*a2a.TaskPushConfig, error) {
-	var result a2a.TaskPushConfig
+func (t *a2aHTTPJSONTransport) CreateTaskPushConfig(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.PushConfig,
+) (*a2a.PushConfig, error) {
+	var result a2a.PushConfig
 	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs"
-	if err := t.decode(ctx, http.MethodPost, endpoint, map[string]any{"config": params}, nil, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodPost, endpoint, params, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-func (t *a2aHTTPJSONTransport) DeleteTaskPushConfig(ctx context.Context, params *a2a.DeleteTaskPushConfigParams) error {
-	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs/" + url.PathEscape(params.ConfigID)
-	_, err := t.request(ctx, http.MethodDelete, endpoint, nil, nil)
+func (t *a2aHTTPJSONTransport) DeleteTaskPushConfig(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.DeleteTaskPushConfigRequest,
+) error {
+	endpoint := "v1/tasks/" + url.PathEscape(string(params.TaskID)) + "/pushNotificationConfigs/" + url.PathEscape(params.ID)
+	_, err := t.request(ctx, serviceParams, http.MethodDelete, endpoint, nil, nil)
 	return err
 }
 
-func (t *a2aHTTPJSONTransport) GetAgentCard(ctx context.Context) (*a2a.AgentCard, error) {
+func (t *a2aHTTPJSONTransport) GetExtendedAgentCard(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, params *a2a.GetExtendedAgentCardRequest,
+) (*a2a.AgentCard, error) {
 	var result a2a.AgentCard
-	if err := t.decode(ctx, http.MethodGet, "v1/card", nil, nil, &result); err != nil {
+	if err := t.decode(ctx, serviceParams, http.MethodGet, "v1/card", nil, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -173,8 +190,10 @@ func (t *a2aHTTPJSONTransport) GetAgentCard(ctx context.Context) (*a2a.AgentCard
 
 func (t *a2aHTTPJSONTransport) Destroy() error { return nil }
 
-func (t *a2aHTTPJSONTransport) decode(ctx context.Context, method, endpoint string, body any, query url.Values, target any) error {
-	data, err := t.request(ctx, method, endpoint, body, query)
+func (t *a2aHTTPJSONTransport) decode(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, method, endpoint string, body any, query url.Values, target any,
+) error {
+	data, err := t.request(ctx, serviceParams, method, endpoint, body, query)
 	if err != nil {
 		return err
 	}
@@ -184,7 +203,9 @@ func (t *a2aHTTPJSONTransport) decode(ctx context.Context, method, endpoint stri
 	return nil
 }
 
-func (t *a2aHTTPJSONTransport) request(ctx context.Context, method, endpoint string, body any, query url.Values) ([]byte, error) {
+func (t *a2aHTTPJSONTransport) request(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, method, endpoint string, body any, query url.Values,
+) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -200,11 +221,9 @@ func (t *a2aHTTPJSONTransport) request(ctx context.Context, method, endpoint str
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if meta, ok := a2aclient.CallMetaFrom(ctx); ok {
-		for key, values := range meta {
-			for _, value := range values {
-				req.Header.Add(key, value)
-			}
+	for key, values := range serviceParams {
+		for _, value := range values {
+			req.Header.Add(key, value)
 		}
 	}
 	resp, err := t.httpClient.Do(req)
@@ -222,7 +241,9 @@ func (t *a2aHTTPJSONTransport) request(ctx context.Context, method, endpoint str
 	return data, nil
 }
 
-func (t *a2aHTTPJSONTransport) stream(ctx context.Context, endpoint string, body any) iter.Seq2[a2a.Event, error] {
+func (t *a2aHTTPJSONTransport) stream(
+	ctx context.Context, serviceParams a2aclient.ServiceParams, endpoint string, body any,
+) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
 		data, err := json.Marshal(body)
 		if err != nil {
@@ -236,6 +257,11 @@ func (t *a2aHTTPJSONTransport) stream(ctx context.Context, endpoint string, body
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
+		for key, values := range serviceParams {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
 		resp, err := t.httpClient.Do(req)
 		if err != nil {
 			yield(nil, err)
@@ -301,14 +327,9 @@ func a2aSSEData(body io.Reader) iter.Seq2[[]byte, error] {
 }
 
 func a2aHTTPJSONEvent(raw []byte) (a2a.Event, error) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	var response a2a.StreamResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("decode HTTP+JSON stream event: %w", err)
 	}
-	for _, key := range []string{"message", "task", "statusUpdate", "artifactUpdate"} {
-		if value := envelope[key]; value != nil {
-			return a2a.UnmarshalEventJSON(value)
-		}
-	}
-	return nil, fmt.Errorf("HTTP+JSON stream event has no A2A payload")
+	return response.Event, nil
 }

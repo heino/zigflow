@@ -7,7 +7,7 @@ replace k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20260821135717-be32def
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/a2aproject/a2a-go v0.3.15
+	github.com/a2aproject/a2a-go/v2 v2.6.0
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
@@ -217,6 +217,7 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect

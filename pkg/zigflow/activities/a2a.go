@@ -19,23 +19,20 @@ package activities
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2aclient"
-	"github.com/a2aproject/a2a-go/a2aclient/agentcard"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
 	"github.com/google/uuid"
 	swUtil "github.com/open-workflow-specification/sdk-go/v4/impl/utils"
 	"github.com/open-workflow-specification/sdk-go/v4/model"
 	"github.com/zigflow/zigflow/pkg/utils"
 	"github.com/zigflow/zigflow/pkg/zigflow/metadata"
 	"go.temporal.io/sdk/activity"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 func init() {
@@ -131,38 +128,40 @@ func (c *CallA2A) call(ctx context.Context, client *a2aclient.Client, args *A2AA
 	case a2aMethodMessageStream:
 		return callA2AMessage(ctx, client, args, info, true)
 	case a2aMethodTaskGet:
-		return callA2AParameters(args.Parameters, func(params *a2a.TaskQueryParams) (any, error) { return client.GetTask(ctx, params) })
+		return callA2AParameters(args.Parameters, func(params *a2a.GetTaskRequest) (any, error) { return client.GetTask(ctx, params) })
 	case a2aMethodTaskList:
 		return callA2AParameters(args.Parameters, func(params *a2a.ListTasksRequest) (any, error) { return client.ListTasks(ctx, params) })
 	case a2aMethodTaskCancel:
-		return callA2AParameters(args.Parameters, func(params *a2a.TaskIDParams) (any, error) { return client.CancelTask(ctx, params) })
+		return callA2AParameters(args.Parameters, func(params *a2a.CancelTaskRequest) (any, error) { return client.CancelTask(ctx, params) })
 	case a2aMethodTaskResubscribe:
-		return callA2AParameters(args.Parameters, func(params *a2a.TaskIDParams) (any, error) {
-			return collectA2AEvents(client.ResubscribeToTask(ctx, params))
+		return callA2AParameters(args.Parameters, func(params *a2a.SubscribeToTaskRequest) (any, error) {
+			return collectA2AEvents(client.SubscribeToTask(ctx, params))
 		})
 	case a2aMethodPushConfigSet:
-		return callA2AParameters(args.Parameters, func(params *a2a.TaskPushConfig) (any, error) { return client.SetTaskPushConfig(ctx, params) })
+		return callA2AParameters(args.Parameters, func(params *a2a.PushConfig) (any, error) { return client.CreateTaskPushConfig(ctx, params) })
 	case a2aMethodPushConfigGet:
-		return callA2AParameters(args.Parameters, func(params *a2a.GetTaskPushConfigParams) (any, error) {
+		return callA2AParameters(args.Parameters, func(params *a2a.GetTaskPushConfigRequest) (any, error) {
 			return client.GetTaskPushConfig(ctx, params)
 		})
 	case a2aMethodPushConfigList:
-		return callA2AParameters(args.Parameters, func(params *a2a.ListTaskPushConfigParams) (any, error) {
-			return client.ListTaskPushConfig(ctx, params)
+		return callA2AParameters(args.Parameters, func(params *a2a.ListTaskPushConfigRequest) (any, error) {
+			return client.ListTaskPushConfigs(ctx, params)
 		})
 	case a2aMethodPushConfigDelete:
-		return callA2AParameters(args.Parameters, func(params *a2a.DeleteTaskPushConfigParams) (any, error) {
+		return callA2AParameters(args.Parameters, func(params *a2a.DeleteTaskPushConfigRequest) (any, error) {
 			return nil, client.DeleteTaskPushConfig(ctx, params)
 		})
 	case a2aMethodAuthenticatedExtendedAgentCard:
-		return client.GetAgentCard(ctx)
+		return callA2AParameters(args.Parameters, func(params *a2a.GetExtendedAgentCardRequest) (any, error) {
+			return client.GetExtendedAgentCard(ctx, params)
+		})
 	default:
 		return nil, fmt.Errorf("unsupported A2A method %q", args.Method)
 	}
 }
 
 func callA2AMessage(ctx context.Context, client *a2aclient.Client, args *A2AArguments, info *activity.Info, streaming bool) (any, error) {
-	var params a2a.MessageSendParams
+	var params a2a.SendMessageRequest
 	if err := decodeA2AParameters(args.Parameters, &params); err != nil {
 		return nil, err
 	}
@@ -189,11 +188,10 @@ func newA2AClient(ctx context.Context, args *A2AArguments, timeout time.Duration
 	opts := []a2aclient.FactoryOption{
 		a2aclient.WithDefaultsDisabled(),
 		a2aclient.WithJSONRPCTransport(httpClient),
-		a2aclient.WithGRPCTransport(grpcTLSOption()),
 		a2aclient.WithTransport(a2a.TransportProtocolHTTPJSON, a2aclient.TransportFactoryFn(func(
-			_ context.Context, endpoint string, _ *a2a.AgentCard,
+			_ context.Context, _ *a2a.AgentCard, iface *a2a.AgentInterface,
 		) (a2aclient.Transport, error) {
-			return newA2AHTTPJSONTransport(endpoint, httpClient), nil
+			return newA2AHTTPJSONTransport(iface.URL, httpClient), nil
 		})),
 	}
 	if len(args.AgentCard) > 0 && string(args.AgentCard) != a2aJSONNull {
@@ -217,21 +215,16 @@ func newA2AClient(ctx context.Context, args *A2AArguments, timeout time.Duration
 	if err != nil {
 		return nil, err
 	}
-	return a2aclient.NewFromEndpoints(ctx, []a2a.AgentInterface{{
-		Transport: a2a.TransportProtocolJSONRPC,
-		URL:       endpoint,
-	}}, opts...)
+	return a2aclient.NewFromEndpoints(ctx, []*a2a.AgentInterface{
+		a2a.NewAgentInterface(endpoint, a2a.TransportProtocolJSONRPC),
+	}, opts...)
 }
 
 func validateA2AAgentCard(card *a2a.AgentCard) error {
-	if len(card.Security) > 0 {
+	if len(card.SecurityRequirements) > 0 {
 		return fmt.Errorf("A2A Agent Card requires client authentication, which Zigflow does not yet support")
 	}
 	return nil
-}
-
-func grpcTLSOption() grpc.DialOption {
-	return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
 }
 
 func a2aEndpoint(raw json.RawMessage, field string) (string, error) {
@@ -331,7 +324,7 @@ func decodeA2AParameters(raw json.RawMessage, target any) error {
 // is derived from stable Temporal activity identity, so an activity retry
 // retains the A2A message identity instead of accidentally starting a second
 // agent task.
-func defaultA2AMessage(params *a2a.MessageSendParams, info *activity.Info) {
+func defaultA2AMessage(params *a2a.SendMessageRequest, info *activity.Info) {
 	if params.Message.ID == "" {
 		params.Message.ID = uuid.NewSHA1(uuid.NameSpaceURL, []byte(info.WorkflowExecution.ID+":"+info.ActivityID)).String()
 	}
